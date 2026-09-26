@@ -215,3 +215,14 @@ input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: 0
 .method { margin-left: 8px; padding: 1px 8px; border-radius: 99px; background: var(--surface2); font-size: .72rem; font-weight: 700; }
 .method.face { background: var(--green-soft); color: var(--green); } .method.warn { background: var(--amber-soft); color: var(--amber); }
 @media (max-width: 640px) { .notice .btn { width: 100%; } .actions .btn { flex: 1; } }
+
+/* ---------- Phase 3: liveness ---------- */
+.camera-wrap { position: relative; }
+.arrow-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  color: #fff; background: rgba(0,0,0,.35); font-weight: 700; font-size: 1.1rem; text-transform: capitalize; pointer-events: none; }
+.arrow-overlay svg { animation: nudge 0.9s ease-in-out infinite; filter: drop-shadow(0 2px 6px rgba(0,0,0,.5)); }
+.arrow-overlay.dir-left svg { transform: scaleX(1); }
+.arrow-overlay.dir-right svg { transform: scaleX(1); }
+@keyframes nudge { 0%,100% { transform: translateX(0); } 50% { transform: translateX(-10px); } }
+.dir-right svg { animation-name: nudgeRight; }
+@keyframes nudgeRight { 0%,100% { transform: translateX(0); } 50% { transform: translateX(10px); } }

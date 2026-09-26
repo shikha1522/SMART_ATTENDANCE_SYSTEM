@@ -74,10 +74,15 @@ router.delete('/face', auth, requireRole('student'), async (req, res) => {
   res.json({ ok: true });
 });
 
-// ---- student check-in (face verification) -----------------------------------
+// ---- student check-in: liveness (head-turn) + face verification ------------
+router.get('/sessions/:id/checkin/challenge', auth, requireRole('student'), (req, res) => {
+  res.json({ challenge: Math.random() < 0.5 ? 'left' : 'right' });
+});
+
 router.post('/sessions/:id/checkin', auth, requireRole('student'), async (req, res) => {
-  const { image } = req.body;
-  if (!image) return res.status(400).json({ error: 'No photo received' });
+  const { baseline, turned, challenge } = req.body;
+  if (!baseline || !turned) return res.status(400).json({ error: 'Two photos are required (baseline and turned)' });
+  if (!['left', 'right'].includes(challenge)) return res.status(400).json({ error: 'Invalid challenge' });
   try {
     const { rows: [s] } = await pool.query(
       `SELECT s.id, s.status FROM attendance_sessions s
@@ -97,21 +102,33 @@ router.post('/sessions/:id/checkin', auth, requireRole('student'), async (req, r
     const { rows: [fe] } = await pool.query('SELECT embedding FROM face_embeddings WHERE student_id=$1', [req.user.id]);
     if (!fe) return res.status(400).json({ error: 'Register your face first', needs_registration: true });
 
-    const r = await ml('/verify', { image, embeddings: fe.embedding });
+    const bumpFailed = async (extra) => {
+      const failed = (rec.signals?.failed_attempts || 0) + 1;
+      await pool.query(
+        `UPDATE attendance_records SET signals = signals || $3::jsonb WHERE session_id=$1 AND student_id=$2`,
+        [s.id, req.user.id, JSON.stringify({ failed_attempts: failed, ...extra })]);
+      return failed;
+    };
 
+    // 1) liveness: did the student actually turn their head as asked?
+    const live = await ml('/liveness', { baseline, turned, challenge });
+    if (!live.live) {
+      const failed = await bumpFailed({ last_failure: 'liveness', liveness: live });
+      return res.json({ matched: false, liveness: false, message: 'We could not confirm a live head turn. Follow the on-screen arrow and try again.', failed_attempts: failed });
+    }
+
+    // 2) identity: does the turned photo match the student's registered face?
+    const r = await ml('/verify', { image: turned, embeddings: fe.embedding });
     if (r.match) {
-      const signals = { method: 'face', face: { score: r.score, threshold: r.threshold } };
+      const signals = { method: 'face', liveness: live, face: { score: r.score, threshold: r.threshold } };
       await pool.query(
         `UPDATE attendance_records SET status='present', marked_at=now(), signals = signals || $3::jsonb
          WHERE session_id=$1 AND student_id=$2`, [s.id, req.user.id, JSON.stringify(signals)]);
-      return res.json({ matched: true, score: r.score });
+      return res.json({ matched: true, liveness: true, score: r.score });
     }
 
-    const failed = (rec.signals?.failed_attempts || 0) + 1;
-    await pool.query(
-      `UPDATE attendance_records SET signals = signals || $3::jsonb WHERE session_id=$1 AND student_id=$2`,
-      [s.id, req.user.id, JSON.stringify({ failed_attempts: failed, last_failed_score: r.score })]);
-    res.json({ matched: false, score: r.score, threshold: r.threshold, failed_attempts: failed });
+    const failed = await bumpFailed({ last_failure: 'face', last_failed_score: r.score });
+    res.json({ matched: false, liveness: true, score: r.score, threshold: r.threshold, failed_attempts: failed });
   } catch (e) { fail(res, e); }
 });
 

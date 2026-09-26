@@ -32,6 +32,12 @@ MIN_DET_SCORE = 0.85   # detector confidence
 MIN_FACE_PX = 70       # face width in pixels (after resizing to max 640px)
 MAX_SIDE = 640
 
+# Phase 3: liveness (head-turn challenge)
+LIVENESS_MIN_SHIFT = float(os.getenv("LIVENESS_MIN_SHIFT", "0.12"))  # min normalised nose shift to count as a turn
+LIVENESS_MAX_SHIFT = float(os.getenv("LIVENESS_MAX_SHIFT", "0.9"))   # above this, treat as a bad detection, not a huge turn
+# If "left"/"right" come out reversed for your camera, set LIVENESS_FLIP=1 (see README).
+LIVENESS_FLIP = os.getenv("LIVENESS_FLIP", "0") == "1"
+
 app = Flask(__name__)
 lock = threading.Lock()      # OpenCV detector/recognizer objects are not thread-safe
 detector = None
@@ -97,8 +103,8 @@ def decode_image(data):
     return img
 
 
-def embed_image(img):
-    """Return (embedding, detector_score) for the single face in img, or raise ApiError."""
+def detect_single_face(img):
+    """Return the OpenCV face row [x,y,w,h, 5x(landmark x,y), score] for the one face in img."""
     h, w = img.shape[:2]
     with lock:
         detector.setInputSize((w, h))
@@ -111,12 +117,28 @@ def embed_image(img):
     face = faces[0]
     if face[2] < MIN_FACE_PX:
         raise ApiError("face_too_small", "Face is too small. Move closer to the camera.")
+    return face
+
+
+def embed_image(img):
+    """Return (embedding, detector_score) for the single face in img, or raise ApiError."""
+    face = detect_single_face(img)
     with lock:
         aligned = recognizer.alignCrop(img, face)
         feat = recognizer.feature(aligned)
     feat = np.asarray(feat, dtype=np.float32).flatten()
     feat /= np.linalg.norm(feat) + 1e-9
     return feat, float(face[14])
+
+
+def yaw_of(face):
+    """Horizontal nose position relative to the eyes, normalised by eye spacing.
+    ~0 = facing the camera; positive/negative = turned one way or the other."""
+    re_x, le_x, nose_x = face[4], face[6], face[8]
+    eye_dist = abs(le_x - re_x)
+    if eye_dist < 1e-3:
+        raise ApiError("face_too_small", "Could not read the face angle. Move closer and try again.")
+    return (nose_x - (re_x + le_x) / 2) / eye_dist
 
 
 # ---------------------------------------------------------------- routes
@@ -152,6 +174,33 @@ def verify():
     return jsonify({"score": round(score, 4), "match": score >= FACE_THRESHOLD,
                     "threshold": FACE_THRESHOLD, "det_score": det})
 
+
+@app.post("/liveness")
+def liveness():
+    """Verify the student actually turned their head between two photos (anti-photo-spoof, Phase 3).
+    Body: {baseline, turned, challenge: "left"|"right"}."""
+    body = request.get_json(silent=True) or {}
+    challenge = body.get("challenge")
+    if challenge not in ("left", "right"):
+        raise ApiError("bad_challenge", "challenge must be 'left' or 'right'", 400)
+
+    base_face = detect_single_face(decode_image(body.get("baseline")))
+    turn_face = detect_single_face(decode_image(body.get("turned")))
+    shift = yaw_of(turn_face) - yaw_of(base_face)
+    signed = -shift if LIVENESS_FLIP else shift
+
+    if abs(signed) > LIVENESS_MAX_SHIFT:
+        direction, live = "none", False
+    elif signed > LIVENESS_MIN_SHIFT:
+        direction, live = "right", challenge == "right"
+    elif signed < -LIVENESS_MIN_SHIFT:
+        direction, live = "left", challenge == "left"
+    else:
+        direction, live = "none", False
+
+    print(f"[liveness] asked={challenge} detected={direction} shift={shift:.4f} flip={LIVENESS_FLIP}", flush=True)
+    return jsonify({"live": live, "challenge": challenge, "detected_direction": direction,
+                    "shift": round(float(shift), 4)})
 
 if __name__ == "__main__":
     from waitress import serve

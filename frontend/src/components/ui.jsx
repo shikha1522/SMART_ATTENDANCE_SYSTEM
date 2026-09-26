@@ -7,6 +7,7 @@ const PATHS = {
   play: 'M6 4l14 8-14 8z',
   stop: 'M6 6h12v12H6z',
   back: 'M15 18l-6-6 6-6',
+  forward: 'M9 18l6-6-6-6',
   trash: 'M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6',
   logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
   building: 'M3 21h18M5 21V5l7-2 7 2v16M9 9h1M9 13h1M14 9h1M14 13h1',
